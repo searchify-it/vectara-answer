@@ -2,8 +2,7 @@ const express = require("express");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 require("dotenv").config();
 const app = express();
-const port = 4444; // 4444 for local dev, 3000 for Docker
-
+const port = process.env.PORT || 4444; // default port 4444 for local development and 3000 for docker
 app.use(express.json());
 app.use("/", express.static("build"));
 
@@ -21,7 +20,8 @@ const proxyOptions = {
     proxyReq.setHeader("customer-id", process.env.customer_id);
     proxyReq.setHeader("x-api-key", process.env.api_key);
     proxyReq.setHeader("grpc-timeout", "60S");
-
+    proxyReq.setHeader("X-Source", "vectara-answer");
+    
     if (req.body) {
       const bodyData = JSON.stringify(req.body);
       proxyReq.setHeader("Content-Length", Buffer.byteLength(bodyData));
@@ -38,6 +38,7 @@ app.post("/config", (req, res) => {
     corpus_id,
     customer_id,
     api_key,
+    hf_token,
 
     // App
     ux,
@@ -63,13 +64,9 @@ app.post("/config", (req, res) => {
     summary_num_results,
     summary_num_sentences,
     summary_prompt_name,
+    summary_enable_hem,
 
-    // hybrid search
-    hybrid_search_num_words,
-    hybrid_search_lambda_long,
-    hybrid_search_lambda_short,
-
-    // rerank
+    // Rerank
     rerank,
     rerank_num_results,
 
@@ -77,6 +74,11 @@ app.post("/config", (req, res) => {
     mmr,
     mmr_num_results,
     mmr_diversity_bias,
+
+    // Hybrid search
+    hybrid_search_num_words,
+    hybrid_search_lambda_long,
+    hybrid_search_lambda_short,
 
     // Search header
     search_logo_link,
@@ -94,6 +96,7 @@ app.post("/config", (req, res) => {
     // Analytics
     google_analytics_tracking_code,
     full_story_org_id,
+    gtm_container_id,
 
     // Questions
     questions,
@@ -105,6 +108,7 @@ app.post("/config", (req, res) => {
     corpus_id,
     customer_id,
     api_key,
+    hf_token,
 
     // App
     ux,
@@ -125,18 +129,19 @@ app.post("/config", (req, res) => {
     all_sources,
     sources,
 
-    // summary
+    // Summary
     summary_default_language,
     summary_num_results,
     summary_num_sentences,
     summary_prompt_name,
+    summary_enable_hem,
 
-    // hybrid search
+    // Hybrid search
     hybrid_search_num_words,
     hybrid_search_lambda_long,
     hybrid_search_lambda_short,
 
-    // rerank
+    // Rerank
     rerank,
     rerank_num_results,
 
@@ -161,6 +166,7 @@ app.post("/config", (req, res) => {
     // Analytics
     google_analytics_tracking_code,
     full_story_org_id,
+    gtm_container_id,
 
     // Questions
     questions,
