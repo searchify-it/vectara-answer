@@ -9,7 +9,7 @@ import { SearchResultList } from "./results/SearchResultList";
 import { ProgressReport } from "./progressReport/ProgressReport";
 import { SummaryCitation } from "./summary/SummaryCitation";
 import { DeserializedSearchResult } from "./types";
-import { ConfidenceScore } from "./summary/ConfidenceScore";
+import {FactualConsistencyBadge} from "./summary/FactualConsistencyBadge";
 
 export const SummaryUx = () => {
   const {
@@ -19,32 +19,39 @@ export const SummaryUx = () => {
     summarizationResponse,
     searchResultsRef,
     selectedSearchResultPosition,
-    summaryEnableHem,
+    fcsMode,
+    factualConsistencyScore,
+    enableStreamQuery
   } = useSearchContext();
 
-  const rawSummary = summarizationResponse?.summary[0]?.text;
+  const rawSummary = summarizationResponse;
   const unorderedSummary = sanitizeCitations(rawSummary);
 
   let summary = "";
   let summarySearchResults: DeserializedSearchResult[] = [];
-
-  if (!isSummarizing && unorderedSummary) {
+  const processCitations =  (unorderedSummary: string) => {
     summary = reorderCitations(unorderedSummary);
     if (searchResults) {
       summarySearchResults = applyCitationOrder(
-        searchResults,
-        unorderedSummary
+          searchResults,
+          unorderedSummary
       );
     }
 
     // If there aren't any search results, we can safely sanitize the
-    // summary of any source text citations that might might be contaminating
+    // summary of any source text citations that might be contaminating
     // it.
     if (summarySearchResults.length === 0) {
       summary = unorderedSummary.replace(/\[\d+\]/g, "");
     }
   }
-
+  if(enableStreamQuery && unorderedSummary) {
+    processCitations(unorderedSummary)
+  }
+  else if(!isSummarizing && unorderedSummary)
+  {
+    processCitations(unorderedSummary)
+  }
   return (
     <>
       <ProgressReport isSearching={isSearching} isSummarizing={isSummarizing} />
@@ -61,14 +68,14 @@ export const SummaryUx = () => {
 
           <VuiSpacer size="s" />
 
-          <VuiSummary summary={summary} SummaryCitation={SummaryCitation} />
+          <VuiSummary summary={summary} SummaryCitation={SummaryCitation} className="vuiSummaryWidth" />
 
           <VuiSpacer size="s" />
 
-          {summaryEnableHem && (
-            <ConfidenceScore
-              rawSummary={rawSummary}
-              summarySearchResults={summarySearchResults}
+          {(fcsMode !== "disable" && factualConsistencyScore !== 0) && (
+            <FactualConsistencyBadge
+              score={factualConsistencyScore}
+              fcsMode={fcsMode}
             />
           )}
 

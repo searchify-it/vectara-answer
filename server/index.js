@@ -1,9 +1,11 @@
 const express = require("express");
+
 const { createProxyMiddleware } = require("http-proxy-middleware");
 require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 4444; // default port 4444 for local development and 3000 for docker
 app.use(express.json());
+
 app.use("/", express.static("build"));
 
 app.get("/", function (req, res) {
@@ -21,8 +23,15 @@ const proxyOptions = {
     proxyReq.setHeader("x-api-key", process.env.api_key);
     proxyReq.setHeader("grpc-timeout", "60S");
     proxyReq.setHeader("X-Source", "vectara-answer");
-    
+
+    if (req.body.logQuery) {
+      // Accessing the domain name from the request headers
+      const hostHeader = req.headers.host;
+      console.log(`${hostHeader} - user query: `, req.body.query[0].query)
+    }
+
     if (req.body) {
+      delete req.body.logQuery // remove the logQuery flag from request body
       const bodyData = JSON.stringify(req.body);
       proxyReq.setHeader("Content-Length", Buffer.byteLength(bodyData));
       proxyReq.write(bodyData);
@@ -38,7 +47,6 @@ app.post("/config", (req, res) => {
     corpus_id,
     customer_id,
     api_key,
-    hf_token,
 
     // App
     ux,
@@ -64,15 +72,15 @@ app.post("/config", (req, res) => {
     summary_num_results,
     summary_num_sentences,
     summary_prompt_name,
-    summary_enable_hem,
+    summary_prompt_text_filename,
+    summary_fcs_mode,
+    enable_stream_query,
 
     // Rerank
-    rerank,
     rerank_num_results,
+    reranker_name,
 
     // MMR
-    mmr,
-    mmr_num_results,
     mmr_diversity_bias,
 
     // Hybrid search
@@ -98,6 +106,9 @@ app.post("/config", (req, res) => {
     full_story_org_id,
     gtm_container_id,
 
+    // recommendation
+    related_content,
+
     // Questions
     questions,
   } = process.env;
@@ -108,7 +119,6 @@ app.post("/config", (req, res) => {
     corpus_id,
     customer_id,
     api_key,
-    hf_token,
 
     // App
     ux,
@@ -134,7 +144,9 @@ app.post("/config", (req, res) => {
     summary_num_results,
     summary_num_sentences,
     summary_prompt_name,
-    summary_enable_hem,
+    summary_prompt_text_filename,
+    summary_fcs_mode,
+    enable_stream_query,
 
     // Hybrid search
     hybrid_search_num_words,
@@ -142,12 +154,10 @@ app.post("/config", (req, res) => {
     hybrid_search_lambda_short,
 
     // Rerank
-    rerank,
     rerank_num_results,
+    reranker_name,
 
     // MMR
-    mmr,
-    mmr_num_results,
     mmr_diversity_bias,
 
     // Search header
@@ -167,6 +177,9 @@ app.post("/config", (req, res) => {
     google_analytics_tracking_code,
     full_story_org_id,
     gtm_container_id,
+
+    // recommendation
+    related_content,
 
     // Questions
     questions,

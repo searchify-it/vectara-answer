@@ -14,13 +14,17 @@ type Config = {
   hybridNumWords: number;
   hybridLambdaShort?: number;
   hybridLambdaLong?: number;
+  mode?: string;
   summaryNumResults?: number;
   summaryNumSentences?: number;
   summaryPromptName?: string;
+  summaryPromptText?: string;
+  enableFactualConsistencyScore?: boolean
   customerId: string;
   corpusId: string;
   endpoint: string;
   apiKey: string;
+  logQuery?: boolean;
 };
 
 export const sendSearchRequest = async ({
@@ -35,13 +39,17 @@ export const sendSearchRequest = async ({
   hybridNumWords,
   hybridLambdaShort,
   hybridLambdaLong,
+  mode,
   summaryNumResults,
   summaryNumSentences,
   summaryPromptName,
+  summaryPromptText,
+  enableFactualConsistencyScore,
   customerId,
   corpusId,
   endpoint,
   apiKey,
+  logQuery=false
 }: Config) => {
   const lambda =
     typeof query_str === "undefined" || query_str.trim().split(" ").length > hybridNumWords
@@ -55,10 +63,17 @@ export const sendSearchRequest = async ({
         lambda: lambda,
       },
       metadataFilter: filter ? `doc.source = '${filter}'` : undefined,
+      "semantics": mode ? `RESPONSE` : undefined,
     };
   });
 
+  if (summaryPromptText) {
+    summaryPromptText = summaryPromptText.replaceAll("\\n", "\n");
+    summaryPromptText = summaryPromptText.replaceAll("\\\"", "\\\\\\\"");
+  }
+
   const body = {
+    logQuery: logQuery, // passing request middleware to decide log the query or not
     query: [
       {
         query: query_str,
@@ -78,6 +93,8 @@ export const sendSearchRequest = async ({
                   responseLang: language,
                   maxSummarizedResults: summaryNumResults,
                   summarizerPromptName: summaryPromptName,
+                  promptText: summaryPromptText,
+                  factualConsistencyScore: enableFactualConsistencyScore ?? false
                 },
               ],
             }
@@ -119,7 +136,6 @@ export const sendSearchRequest = async ({
         Accept: "application/json",
         "customer-id": customerId,
         "x-api-key": apiKey,
-//        "X-Source": "vectara-answer",
         "grpc-timeout": "60S",
       },
     };
@@ -146,6 +162,14 @@ export const sendSearchRequest = async ({
       summaryStatus[0]["statusDetail"] === "Failed to retrieve summarizer."
     ) {
       throw new Error(`BAD REQUEST: summarizer ${summaryPromptName} is invalid for this account.`);
+    }
+    if (
+      summaryStatus.length > 0 &&
+      summaryStatus[0]["code"] !== "OK"
+    ) {
+      const statusDetail = summaryStatus[0]["statusDetail"];
+      const code = summaryStatus[0]["code"]
+      throw new Error(`BAD REQUEST: error code [${code}]: ${statusDetail}`);
     }
   }
 

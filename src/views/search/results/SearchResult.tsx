@@ -24,15 +24,15 @@ const CONTEXT_MAX_LENGTH = 200;
 export const SearchResult = forwardRef<HTMLDivElement | null, Props>(
   ({ result, position, isSelected }: Props, ref) => {
     const { filters } = useConfigContext();
-    const { onSearch } = useSearchContext();
+    const { onSearch, relatedContent } = useSearchContext();
 
     const {
       source,
-      title,
       url,
+      id,
       snippet: { pre, post, text },
     } = result;
-
+    const title = result.title ?? id
     return (
       <VuiSearchResult
         ref={ref}
@@ -47,6 +47,7 @@ export const SearchResult = forwardRef<HTMLDivElement | null, Props>(
           },
         }}
         position={position + 1}
+        relatedContent={relatedContent}
         subTitle={
           Boolean(filters.isEnabled || url) && (
             <VuiFlexContainer
