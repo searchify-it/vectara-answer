@@ -7,12 +7,13 @@ import {
   useEffect,
   useRef,
 } from "react";
+import * as amplitude from '@amplitude/analytics-browser';
 import { useSearchParams } from "react-router-dom";
 import {
-    DeserializedSearchResult,
-    SearchResponse,
-    SummaryLanguage,
-    SearchError, FcsMode,
+  DeserializedSearchResult,
+  SearchResponse,
+  SummaryLanguage,
+  SearchError, FcsMode, ApiV2SearchResponse, FCS_SUPPORTED_LANGUAGES
 } from "../views/search/types";
 import { useConfigContext } from "./ConfigurationContext";
 import { sendSearchRequest } from "./sendSearchRequest";
@@ -23,8 +24,11 @@ import {
   retrieveHistory,
 } from "./history";
 import { deserializeSearchResponse } from "../utils/deserializeSearchResponse";
-import { StreamUpdate } from "@vectara/stream-query-client/lib/types";
-import { streamQuery } from "@vectara/stream-query-client";
+
+import { ApiV2, ApiV1, streamQueryV1, streamQueryV2 } from "@vectara/stream-query-client";
+import { apiV2sendSearchRequest } from "./apiV2sendSearchRequest";
+import { END_TAG, START_TAG } from "../utils/parseSnippet";
+import { getRerankerConfigForApiV1StreamQuery, getRerankerConfigForApiV2 } from "../utils/getRerankerConfig";
 
 interface SearchContextType {
   filterValue: string;
@@ -46,6 +50,7 @@ interface SearchContextType {
     modifiedFcsMode?: FcsMode,
     isPersistable?: boolean;
     mode?: string;
+    promptName?: string
   }) => void;
   reset: () => void;
   isSearching: boolean;
@@ -87,7 +92,7 @@ type Props = {
 let searchCount = 0;
 
 export const SearchContextProvider = ({ children }: Props) => {
-  const { isConfigLoaded, search, summary, results, rerank, hybrid, uxMode, fcsMode } =
+  const { isConfigLoaded, search, summary, setSummary, results, rerank, hybrid, uxMode, fcsMode, app, filterBySource } =
     useConfigContext();
   const isSummaryEnabled = uxMode === "summary";
 
@@ -106,23 +111,23 @@ export const SearchContextProvider = ({ children }: Props) => {
   // Basic search
   const [isSearching, setIsSearching] = useState(false);
   const [searchError, setSearchError] = useState<SearchError | undefined>();
-  const [searchResponse, setSearchResponse] = useState<SearchResponse>();
+  const [searchResponse, setSearchResponse] = useState<SearchResponse | ApiV2.Query.SearchResult[]>();
   const [searchTime, setSearchTime] = useState<number>(0);
 
   // Summarization
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [summarizationError, setSummarizationError] = useState<
-      SearchError | undefined
+    SearchError | undefined
   >();
   const [summarizationResponse, setSummarizationResponse] =
-      useState<string>();
+    useState<string>();
   const [summaryTime, setSummaryTime] = useState<number>(0);
   const [factualConsistencyScore, setFactualConsistencyScore] = useState<number | undefined>();
 
   // Citation selection
   const searchResultsRef = useRef<HTMLElement[] | null[]>([]);
   const [selectedSearchResultPosition, setSelectedSearchResultPosition] =
-      useState<number>();
+    useState<number>();
 
   useEffect(() => {
     setHistory(retrieveHistory());
@@ -143,8 +148,8 @@ export const SearchContextProvider = ({ children }: Props) => {
       value: getQueryParam(urlParams, "query") ?? "",
       filter: getQueryParam(urlParams, "filter"),
       language: getQueryParam(urlParams, "language") as
-          | SummaryLanguage
-          | undefined,
+        | SummaryLanguage
+        | undefined,
       isPersistable: false,
       mode: getQueryParam(urlParams, "mode") ?? "",
     });
@@ -156,8 +161,8 @@ export const SearchContextProvider = ({ children }: Props) => {
   useEffect(() => {
     if (searchResults) {
       searchResultsRef.current = searchResultsRef.current.slice(
-          0,
-          searchResults.length
+        0,
+        searchResults.length
       );
     } else {
       searchResultsRef.current = [];
@@ -171,8 +176,8 @@ export const SearchContextProvider = ({ children }: Props) => {
 
   const selectSearchResultAt = (position: number) => {
     if (
-        !searchResultsRef.current[position] ||
-        selectedSearchResultPosition === position
+      !searchResultsRef.current[position] ||
+      selectedSearchResultPosition === position
     ) {
       // Reset selected position.
       setSelectedSearchResultPosition(undefined);
@@ -187,7 +192,7 @@ export const SearchContextProvider = ({ children }: Props) => {
   };
 
   const getLanguage = (): SummaryLanguage =>
-      (languageValue ?? summary.defaultLanguage) as SummaryLanguage;
+    (languageValue ?? summary.defaultLanguage) as SummaryLanguage;
 
   const onSearch = async ({
     value = searchValue,
@@ -196,6 +201,7 @@ export const SearchContextProvider = ({ children }: Props) => {
     modifiedFcsMode = fcsMode,
     isPersistable = true,
     mode = modeValue,
+    promptName = summary.summaryPromptName
   }: {
     value?: string;
     filter?: string;
@@ -203,6 +209,7 @@ export const SearchContextProvider = ({ children }: Props) => {
     modifiedFcsMode?: FcsMode
     isPersistable?: boolean;
     mode?: string;
+    promptName?: string
   }) => {
     const searchId = ++searchCount;
 
@@ -210,6 +217,7 @@ export const SearchContextProvider = ({ children }: Props) => {
     setFilterValue(filter);
     setLanguageValue(language);
     setModeValue(mode);
+    setSummary({...summary, summaryPromptName: promptName})
     const isFactualConsistentScoreEnabled = modifiedFcsMode === "score" || modifiedFcsMode === "badge"
 
     if (value?.trim()) {
@@ -232,147 +240,322 @@ export const SearchContextProvider = ({ children }: Props) => {
       setIsSearching(true);
       setIsSummarizing(true);
       setSelectedSearchResultPosition(undefined);
+      const getRerankerNumResults = () => {
+        if (filter) {
+              return 100
+        }
+        else return rerank.numResults
+      }
+      if (search.corpusKey) {
+        if (search.enableStreamQuery) {
+          try {
+            const startTime = Date.now();
+            const onStreamEvent = (event: ApiV2.StreamEvent) => {
+              if (searchId === searchCount) {
+                switch (event.type) {
+                  case "requestError":
+                  case "genericError":
+                    setIsSearching(false);
+                    setSearchResponse(undefined);
+                    break;
 
-      let initialSearchResponse;
+                  case "error":
+                    if (!event.messages[0].includes("QRY__PARTIAL_RERANK: reranked") &&
+                        !event.messages[0].includes("QRY__SMRY__EVAL_FAILURE")) {
+                      setIsSearching(false);
+                      setSearchResponse(undefined);
+                    }
+                    break;
 
-      try {
-        const startTime = Date.now();
-        initialSearchResponse = await sendSearchRequest({
-          filter,
-          query_str: value,
-          rerank: rerank.isEnabled,
-          rerankNumResults: rerank.numResults,
-          rerankerId: rerank.id,
-          rerankDiversityBias: rerank.diversityBias,
-          hybridNumWords: hybrid.numWords,
-          hybridLambdaLong: hybrid.lambdaLong,
-          hybridLambdaShort: hybrid.lambdaShort,
-          mode: mode,
-          customerId: search.customerId!,
-          corpusId: search.corpusId!,
-          endpoint: search.endpoint!,
-          apiKey: search.apiKey!,
-          logQuery: true
-        });
-        const totalTime = Date.now() - startTime;
+                  case "searchResults":
+                    setSearchResponse(event.searchResults)
+                    setIsSearching(false);
+                    setSearchTime(Date.now() - startTime);
 
-        // If we send multiple requests in rapid succession, we only want to
-        // display the results of the most recent request.
-        if (searchId === searchCount) {
-          setIsSearching(false);
-          setSearchTime(totalTime);
-          setSearchResponse(initialSearchResponse);
+                    break;
 
-          if (initialSearchResponse.response.length > 0) {
-            setSearchError(undefined);
-          } else {
-            setSearchError({
-              message: "There weren't any results for your search.",
-            });
+                  case "generationChunk":
+                    setSummarizationError(undefined);
+                    setSummarizationResponse(event.updatedText ?? undefined);
+                    setFactualConsistencyScore(undefined)
+                    break;
+
+                  case "factualConsistencyScore":
+                    setFactualConsistencyScore(event.factualConsistencyScore > 0 ? event.factualConsistencyScore : undefined)
+                    break;
+
+                  case "end":
+                    setIsSummarizing(false);
+                    setSummaryTime(Date.now() - startTime);
+                    amplitude.track("Query", {
+                      "Space Name": app.title,
+                      query: value,
+                      summary: summary,
+                      searchResult: searchResults
+                    })
+                    break;
+                }
+              }
+            };
+
+            const streamQueryConfig: ApiV2.StreamQueryConfig = {
+              apiKey: search.apiKey!,
+              customerId: search.customerId!,
+              query: value,
+              corpusKey: filterBySource.filterByCorpus && filter ? filter: search.corpusKey!,
+              domain: search.proxyServerUrl,
+              search: {
+                limit: getRerankerNumResults(),
+                offset: 0,
+                metadataFilter: !filterBySource.filterByCorpus && filter ? `doc.source =  '${filter.toLowerCase()}'` : "",
+                lexicalInterpolation:
+                  value.trim().split(" ").length > hybrid.numWords ? hybrid.lambdaLong : hybrid.lambdaShort,
+                reranker: getRerankerConfigForApiV2(rerank),
+                contextConfiguration: {
+                  sentencesBefore: summary.summaryNumSentences,
+                  sentencesAfter: summary.summaryNumSentences,
+                  startTag: START_TAG,
+                  endTag: END_TAG
+                }
+              },
+              generation: {
+                generationPresetName: promptName,
+                promptText: summary.summaryPromptText,
+                maxUsedSearchResults: summary.summaryNumResults,
+                enableFactualConsistencyScore: FCS_SUPPORTED_LANGUAGES.includes(language) ? isFactualConsistentScoreEnabled : false,
+                responseLanguage: language
+
+              }
+            };
+
+            await streamQueryV2({ streamQueryConfig, onStreamEvent })
+
+          } catch (error) {
+            console.log("Summary error", error);
+            console.log("Search error", error);
+            setIsSearching(false);
+            setSearchError(error as SearchError);
+            setSearchResponse(undefined);
+            setIsSummarizing(false);
+            setSummarizationError(error as SearchError);
+            setSummarizationResponse(undefined);
+            return;
           }
         }
-      } catch (error) {
-        console.log("Search error", error);
-        setIsSearching(false);
-        setSearchError(error as SearchError);
-        setSearchResponse(undefined);
-      }
-
-      // Second call - search and summarize (if summary is enabled); this may take a while to return results
-      if (isSummaryEnabled) {
-        if (initialSearchResponse.response.length > 0) {
-          const startTime = Date.now();
+        else {
           try {
-            if(search.enableStreamQuery) {
-                const onStreamUpdate = (update: StreamUpdate) => {
-                    // If we send multiple requests in rapid succession, we only want to
-                    // display the results of the most recent request.
-                    const fcsDetail = update.details?.factualConsistency
-                    if (searchId === searchCount) {
-                        if (update.isDone) {
-                            setIsSummarizing(false);
-                            setSummaryTime(Date.now() - startTime);
-                        }
-                        setSummarizationError(undefined);
-                        setSummarizationResponse(update.updatedText ?? undefined);
-                        setFactualConsistencyScore(fcsDetail?.score)
+            const startTime = Date.now();
+            const response: ApiV2SearchResponse = await apiV2sendSearchRequest({
+              apiKey: search.apiKey!,
+              customerId: search.customerId!,
+              query: value,
+              corpusKey: filterBySource.filterByCorpus && filter ? filter: search.corpusKey!,
+              endpoint: search.endpoint!,
+              search: {
+                limit: getRerankerNumResults(),
+                offset: 0,
+                metadataFilter: !filterBySource.filterByCorpus && filter ? `doc.source = '${filter.toLowerCase()}'` : "",
+                lexicalInterpolation:
+                  value.trim().split(" ").length > hybrid.numWords ? hybrid.lambdaLong : hybrid.lambdaShort,
+                reranker: getRerankerConfigForApiV2(rerank),
+                contextConfiguration: {
+                  sentencesBefore: summary.summaryNumSentences,
+                  sentencesAfter: summary.summaryNumSentences,
+                  startTag: START_TAG,
+                  endTag: END_TAG
+                }
+              },
+              generation: {
+                promptName: promptName,
+                promptText: summary.summaryPromptText,
+                maxUsedSearchResults: summary.summaryNumResults,
+                enableFactualConsistencyScore: FCS_SUPPORTED_LANGUAGES.includes(language) ? isFactualConsistentScoreEnabled : false,
+                responseLanguage: language
+
+              }
+            })
+            const totalTime = Date.now() - startTime;
+            if (searchId === searchCount) {
+              setSearchResponse(response.search_results)
+              setIsSearching(false);
+              setSearchTime(totalTime);
+              setIsSummarizing(false);
+              setSummarizationError(undefined);
+              setSummarizationResponse(response.summary);
+              setSummaryTime(totalTime);
+              setFactualConsistencyScore(response.factual_consistency_score > 0 ? response.factual_consistency_score : undefined)
+              amplitude.track("Query", {
+                "Space Name": app.title,
+                query: value,
+                summary: summary,
+                searchResult: searchResults
+              })
+
+            }
+          }catch (error) {
+            console.log("Search error", error);
+            setIsSearching(false);
+            setSearchError(error as SearchError);
+            setSearchResponse(undefined);
+            setIsSummarizing(false);
+            setSummarizationError(error as SearchError);
+            setSummarizationResponse(undefined);
+          }
+        }
+
+      }
+      else {
+        let initialSearchResponse;
+        try {
+          const startTime = Date.now();
+          initialSearchResponse = await sendSearchRequest({
+            metadataFilter: !filterBySource.filterByCorpus && filter ? `doc.source = '${filter.toLowerCase()}'` : "",
+            query_str: value,
+            reranker: rerank,
+            hybridNumWords: hybrid.numWords,
+            hybridLambdaLong: hybrid.lambdaLong,
+            hybridLambdaShort: hybrid.lambdaShort,
+            mode: mode,
+            customerId: search.customerId!,
+            corpusId: filterBySource.filterByCorpus && filter ? filter: search.corpusId!,
+            endpoint: search.endpoint!,
+            apiKey: search.apiKey!,
+            userFunction: rerank.userFunction,
+            logQuery: true
+          });
+          const totalTime = Date.now() - startTime;
+
+          // If we send multiple requests in rapid succession, we only want to
+          // display the results of the most recent request.
+          if (searchId === searchCount) {
+            setIsSearching(false);
+            setSearchTime(totalTime);
+            setSearchResponse(initialSearchResponse);
+
+            if (initialSearchResponse.response.length > 0) {
+              setSearchError(undefined);
+            } else {
+              setSearchError({
+                message: "There weren't any results for your search.",
+              });
+            }
+          }
+        } catch (error) {
+          console.log("Search error", error);
+          setIsSearching(false);
+          setSearchError(error as SearchError);
+          setSearchResponse(undefined);
+        }
+
+        // Second call - search and summarize (if summary is enabled); this may take a while to return results
+        if (isSummaryEnabled) {
+          if (initialSearchResponse.response.length > 0) {
+            const startTime = Date.now();
+            try {
+              if(search.enableStreamQuery) {
+                const onStreamUpdate = (update: ApiV1.StreamUpdate) => {
+                  // If we send multiple requests in rapid succession, we only want to
+                  // display the results of the most recent request.
+                  const fcsDetail = update.details?.factualConsistency
+                  if (searchId === searchCount) {
+                    if (update.isDone) {
+                      setFactualConsistencyScore(fcsDetail?.score)
+                      setIsSummarizing(false);
+                      setSummaryTime(Date.now() - startTime);
+                      amplitude.track("Query", {
+                        "Space Name": app.title,
+                        query: value,
+                        summary: summary,
+                        searchResult: searchResults
+                      })
                     }
+                    else {
+                      setFactualConsistencyScore(undefined)
+                    }
+                    setSummarizationError(undefined);
+                    setSummarizationResponse(update.updatedText ?? undefined);
+                  }
                 };
 
                 const hybridLambda = value === "undefined" || value.trim().split(" ").length > hybrid.numWords
-                    ? hybrid.lambdaLong
-                    : hybrid.lambdaShort;
-                streamQuery(
-                    {
-                        filter,
-                        queryValue: value,
-                        rerank: rerank.isEnabled,
-                        rerankNumResults: rerank.numResults,
-                        rerankerId: rerank.id,
-                        rerankDiversityBias: rerank.diversityBias,
-                        summaryNumResults: summary.summaryNumResults,
-                        summaryNumSentences: summary.summaryNumSentences,
-                        summaryPromptName: summary.summaryPromptName,
-                        enableFactualConsistencyScore: isFactualConsistentScoreEnabled,
-                        lambda: hybridLambda,
-                        language,
-                        customerId: search.customerId!,
-                        corpusIds: search.corpusId!.split(","),
-                        endpoint: search.endpoint!,
-                        apiKey: search.apiKey!,
-                    },
-                    onStreamUpdate
-                );
-            }
-            else {
-                const response = await sendSearchRequest({
-                    filter,
-                    query_str: value,
-                    summaryMode: true,
+                  ? hybrid.lambdaLong
+                  : hybrid.lambdaShort;
+                streamQueryV1(
+                  {
+                    filter: !filterBySource.filterByCorpus && filter ? `doc.source = '${filter.toLowerCase()}'` : "",
+                    queryValue: value,
                     rerank: rerank.isEnabled,
-                    rerankNumResults: rerank.numResults,
-                    rerankerId: rerank.id,
+                    rerankNumResults: getRerankerNumResults(),
+                    rerankerId: getRerankerConfigForApiV1StreamQuery(rerank),
                     rerankDiversityBias: rerank.diversityBias,
                     summaryNumResults: summary.summaryNumResults,
                     summaryNumSentences: summary.summaryNumSentences,
-                    summaryPromptName: summary.summaryPromptName,
-                    summaryPromptText: summary.summaryPromptText,
-                    enableFactualConsistencyScore: isFactualConsistentScoreEnabled,
-                    hybridNumWords: hybrid.numWords,
-                    hybridLambdaLong: hybrid.lambdaLong,
-                    hybridLambdaShort: hybrid.lambdaShort,
+                    summaryPromptName: promptName,
+                    enableFactualConsistencyScore: FCS_SUPPORTED_LANGUAGES.includes(language) ? isFactualConsistentScoreEnabled : false,
+                    lambda: hybridLambda,
                     language,
                     customerId: search.customerId!,
-                    corpusId: search.corpusId!,
-                    endpoint: search.endpoint!,
+                    corpusIds: filterBySource.filterByCorpus && filter ? [filter]: search.corpusId!.split(","),
+                    endpoint: `https://${search.endpoint!}/v1/stream-query`,
                     apiKey: search.apiKey!,
+                  },
+                  onStreamUpdate
+                );
+              }
+              else {
+                const response = await sendSearchRequest({
+                  metadataFilter: !filterBySource.filterByCorpus && filter ? `doc.source = '${filter.toLowerCase()}'` : "",
+                  query_str: value,
+                  summaryMode: true,
+                  reranker: rerank,
+                  userFunction: rerank.userFunction,
+                  summaryNumResults: summary.summaryNumResults,
+                  summaryNumSentences: summary.summaryNumSentences,
+                  summaryPromptName: promptName,
+                  summaryPromptText: summary.summaryPromptText,
+                  enableFactualConsistencyScore: FCS_SUPPORTED_LANGUAGES.includes(language) ? isFactualConsistentScoreEnabled : false,
+                  hybridNumWords: hybrid.numWords,
+                  hybridLambdaLong: hybrid.lambdaLong,
+                  hybridLambdaShort: hybrid.lambdaShort,
+                  language,
+                  customerId: search.customerId!,
+                  corpusId: filterBySource.filterByCorpus && filter ? filter: search.corpusId!,
+                  endpoint: search.endpoint!,
+                  apiKey: search.apiKey!,
                 });
                 const totalTime = Date.now() - startTime;
 
                 // If we send multiple requests in rapid succession, we only want to
                 // display the results of the most recent request.
                 if (searchId === searchCount) {
-                    setIsSummarizing(false);
-                    setSummarizationError(undefined);
-                    setSummarizationResponse(response.summary[0]?.text);
-                    setSummaryTime(totalTime);
-                    setFactualConsistencyScore(response?.summary[0]?.factualConsistency?.score)
+                  setIsSummarizing(false);
+                  setSummarizationError(undefined);
+                  setSummarizationResponse(response.summary[0]?.text);
+                  setSummaryTime(totalTime);
+                  setFactualConsistencyScore(response?.summary[0]?.factualConsistency?.score)
+                  amplitude.track("Query", {
+                    "Space Name": app.title,
+                    query: value,
+                    summary: summary,
+                    searchResult: searchResults
+                  })
 
                 }
+              }
+            } catch (error) {
+              console.log("Summary error", error);
+              setIsSummarizing(false);
+              setSummarizationError(error as SearchError);
+              setSummarizationResponse(undefined);
+              return
             }
-          } catch (error) {
-            console.log("Summary error", error);
+          } else {
             setIsSummarizing(false);
-            setSummarizationError(error as SearchError);
+            setSummarizationError({
+              message: "No search results to summarize",
+            });
             setSummarizationResponse(undefined);
-            return
           }
-        } else {
-          setIsSummarizing(false);
-          setSummarizationError({
-            message: "No search results to summarize",
-          });
-          setSummarizationResponse(undefined);
         }
       }
     } else {
@@ -436,7 +619,7 @@ export const useSearchContext = () => {
   const context = useContext(SearchContext);
   if (context === undefined) {
     throw new Error(
-        "useSearchContext must be used within a SearchContextProvider"
+      "useSearchContext must be used within a SearchContextProvider"
     );
   }
   return context;

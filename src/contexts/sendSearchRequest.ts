@@ -1,16 +1,20 @@
 import axios from "axios";
 import { START_TAG, END_TAG } from "../utils/parseSnippet";
-import { SummaryLanguage, mmr_reranker_id } from "../views/search/types";
+import { SummaryLanguage } from "../views/search/types";
 
+type  Reranker = {
+  isEnabled?: boolean,
+  numResults?: number,
+  names?: string,
+  diversityBias?: number,
+  userFunction?: string
+}
 type Config = {
-  filter: string;
+  metadataFilter?: string;
   query_str?: string;
   language?: SummaryLanguage;
   summaryMode?: boolean;
-  rerank?: boolean;
-  rerankNumResults?: number;
-  rerankerId?: number;
-  rerankDiversityBias?: number;
+  reranker?: Reranker;
   hybridNumWords: number;
   hybridLambdaShort?: number;
   hybridLambdaLong?: number;
@@ -24,18 +28,74 @@ type Config = {
   corpusId: string;
   endpoint: string;
   apiKey: string;
+  userFunction?: string;
   logQuery?: boolean;
 };
 
+type RerankingConfig = {
+  reranker_name?: string;
+  user_function?: string;
+  reranker_id?: number;
+  diversity_bias?: number;
+  next_reranking_config?: RerankingConfig;
+};
+
+const convertReranker = (reranker?: Reranker) => {
+  if (!reranker?.isEnabled || !reranker.names) {
+    return {};
+  }
+
+
+  const rerankerNames = reranker?.names?.split(",");
+  const buildRerankingConfig = (index: number): RerankingConfig | Record<string, string> => {
+    if (index >= rerankerNames.length) {
+      return {};
+    }
+
+    const name = rerankerNames[index];
+
+    switch (name) {
+      case "userfn":
+        return {
+          reranker_name: "User_Defined_Function_Reranker",
+          user_function: reranker.userFunction ?? "",
+          ...(index + 1 < rerankerNames.length && {next_reranking_config: buildRerankingConfig(index + 1)})
+        };
+
+      case "slingshot":
+        return {
+          reranker_name: "vectara-rrk-v1.0.0",
+          ...(index + 1 < rerankerNames.length && {next_reranking_config: buildRerankingConfig(index + 1)})
+        };
+
+      case "normal":
+        return {
+          reranker_name: "Rerank_Multilingual_v1",
+        ...(index + 1 < rerankerNames.length && {next_reranking_config: buildRerankingConfig(index + 1)})
+        };
+
+      case "mmr":
+        return {
+          reranker_name: "Maximum Marginal Relevance Reranker",
+          diversity_bias: reranker.diversityBias ?? 0.3,
+          ...(index + 1 < rerankerNames.length && {next_reranking_config: buildRerankingConfig(index + 1)})
+        };
+
+      default:
+        return {}
+    }
+  };
+
+  // Start the recursion from the first reranker
+  return buildRerankingConfig(0);
+};
+
 export const sendSearchRequest = async ({
-  filter,
+  metadataFilter,
   query_str,
   language,
   summaryMode,
-  rerank,
-  rerankNumResults,
-  rerankerId,
-  rerankDiversityBias,
+  reranker,
   hybridNumWords,
   hybridLambdaShort,
   hybridLambdaLong,
@@ -49,6 +109,7 @@ export const sendSearchRequest = async ({
   corpusId,
   endpoint,
   apiKey,
+  userFunction,
   logQuery=false
 }: Config) => {
   const lambda =
@@ -62,8 +123,8 @@ export const sendSearchRequest = async ({
       lexicalInterpolationConfig: {
         lambda: lambda,
       },
-      metadataFilter: filter ? `doc.source = '${filter}'` : undefined,
-      "semantics": mode ? `RESPONSE` : undefined,
+      metadataFilter: metadataFilter,
+      semantics: mode ? `RESPONSE` : undefined,
     };
   });
 
@@ -78,7 +139,7 @@ export const sendSearchRequest = async ({
       {
         query: query_str,
         start: 0,
-        numResults: rerank ? rerankNumResults : 10,
+        numResults: reranker?.isEnabled ? reranker.numResults : 10,
         corpusKey: corpusKeyList,
         contextConfig: {
           sentencesBefore: summaryMode ? summaryNumSentences : 2,
@@ -99,19 +160,7 @@ export const sendSearchRequest = async ({
               ],
             }
           : {}),
-        ...(rerank
-          ? {
-              rerankingConfig: {
-                rerankerId: rerankerId,
-                ...(rerankerId === mmr_reranker_id ? {
-                      mmrConfig: {
-                        diversityBias: rerankDiversityBias,
-                      }
-                    } : {}
-                ),
-              },
-            }
-          : {}),
+        rerankingConfig: convertReranker(reranker),
       },
     ],
   };

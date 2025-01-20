@@ -100,16 +100,24 @@ Note that the variables in the `.env` file all have the `REACT_APP` prefix, as i
 
 ```yaml
 # These config vars are required for connecting to your Vectara data and issuing requests.
-corpus_id: 5
 customer_id: 123456789
+corpus_id: 5
+corpus_key: vectara_docs_1
 api_key: "zqt_abcdef..."
 ```
 
-Note that `corpud_id` can be a set of corpora in which case each query runs against all those corpora.
-In such a case, the format is a comma-separated list of corpus IDs, for example:
+Notes:
+* Vectara APIV2 uses `corpus_key`, but the older `corpus_id` is also supported for backwards compatibility. We encourage you to use `corpus_key` as we may deprecate support for V1 in the future. 
+* `corpus_key` (or `corpus_id`) can be a set of corpora in which case each query runs against all those corpora. In such a case, the format is a comma-separated list of corpus keys or corpus IDs, for example:
 
 ```yaml
 corpus_id: "123,234,345"
+```
+
+OR
+
+```yaml
+corpus_key: "vectara_docs_1,vectara_website_3"
 ```
 
 ### Search header (optional)
@@ -174,6 +182,9 @@ summary_prompt_text_filename: prompt.txt
 # Whether to disable or enable factual consistency score as (score or badge) based on the HHEMv2 (based on https://huggingface.co/vectara/hallucination_evaluation_model).
 # default value is disable. To enable it set it to score or badge.
 summary_fcs_mode: score
+
+# Add multiple prompts option for the summary.
+summary_prompt_options: vectara-summary-ext-24-05-med-omni,vectara-summary-ext-24-05-sml
 
 ```
 #### Enable summary response streaming (optional)
@@ -266,11 +277,16 @@ This means the user will only be able to select a specific source for each query
 Whether to use Vectara's [reranking](https://docs.vectara.com/docs/api-reference/search-apis/reranking) functionality. Note that reranking currently works for English language only, so if the documents in your corpus are in other languages, it's recommended to set this to "False".
 
 ```yaml
-# choose a reranker from the following choices
-reranker_name: normal | slingshot | mmr
+# choose a reranker from the following choices, You can use single or multiple rerankers with coma separated. e.g `slingshot,mmr`
+# if you are using multiple reranker please make sure slingshot should be first if you are using it. For more details [chain reranking](https://docs.vectara.com/docs/learn/chain-reranker)
+reranker_name: normal | slingshot | mmr | userfn | slingshot,mmr,userfn 
+
 
 # number of results to use for reranking
 rerank_num_results: 50
+
+# enables users to define custom reranking functions using document-level metadata, part-level metadata.
+user_function: "if (now() < iso_datetime_parse('2024-12-04T10:14:50Z')) 1 else 2" 
 ```
 
 To use Vectara's MMR (Maximum Marginal Relevance) functionality please set the `reranker_name = mmr`, and add a `mmr_diversity_bias` value.

@@ -1,6 +1,6 @@
 const express = require("express");
 
-const { createProxyMiddleware } = require("http-proxy-middleware");
+const { legacyCreateProxyMiddleware:createProxyMiddleware } = require("http-proxy-middleware");
 require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 4444; // default port 4444 for local development and 3000 for docker
@@ -15,38 +15,53 @@ app.get("/", function (req, res) {
 const proxyOptions = {
   target: `https://${process.env.endpoint}`,
   changeOrigin: true,
-  pathRewrite: { "^/v1/query": "/v1/query" },
+  pathRewrite: { "^/v1/query": "/v1/query", "^/v2/query": "/v2/query" },
   onProxyReq: (proxyReq, req) => {
     proxyReq.setHeader("Content-Type", "application/json");
-    proxyReq.setHeader("Accept", "application/json");
+    proxyReq.setHeader("Accept", "text/event-stream");
     proxyReq.setHeader("customer-id", process.env.customer_id);
     proxyReq.setHeader("x-api-key", process.env.api_key);
     proxyReq.setHeader("grpc-timeout", "60S");
     proxyReq.setHeader("X-Source", "vectara-answer");
 
-    if (req.body.logQuery) {
-      // Accessing the domain name from the request headers
+    if (req.body && req.body.logQuery) {
       const hostHeader = req.headers.host;
-      console.log(`${hostHeader} - user query: `, req.body.query[0].query)
+      console.log(`${hostHeader} - user query: `, req.body.query[0].query);
     }
 
     if (req.body) {
-      delete req.body.logQuery // remove the logQuery flag from request body
+      delete req.body.logQuery; // Remove the logQuery flag from request body
       const bodyData = JSON.stringify(req.body);
       proxyReq.setHeader("Content-Length", Buffer.byteLength(bodyData));
       proxyReq.write(bodyData);
     }
   },
+  selfHandleResponse: true,
+  onProxyRes: (proxyRes, req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Transfer-Encoding", "chunked");
+
+    proxyRes.pipe(res);
+    proxyRes.on("error", (error) => {
+      console.error("Stream error:", error);
+      res.status(res.status).send(error);
+    });
+  },
 };
+
 app.use("/v1/query", createProxyMiddleware(proxyOptions));
+app.use("/v2/query", createProxyMiddleware(proxyOptions));
 
 app.post("/config", (req, res) => {
   const {
     // Search
     endpoint,
+    proxy_server_url,
     corpus_id,
+    corpus_key,
     customer_id,
     api_key,
+    metadata_filter,
 
     // App
     ux,
@@ -75,10 +90,12 @@ app.post("/config", (req, res) => {
     summary_prompt_text_filename,
     summary_fcs_mode,
     enable_stream_query,
+    summary_prompt_options,
 
     // Rerank
     rerank_num_results,
     reranker_name,
+    user_function,
 
     // MMR
     mmr_diversity_bias,
@@ -105,6 +122,7 @@ app.post("/config", (req, res) => {
     google_analytics_tracking_code,
     full_story_org_id,
     gtm_container_id,
+    amplitude_api_key,
 
     // recommendation
     related_content,
@@ -116,9 +134,12 @@ app.post("/config", (req, res) => {
   res.send({
     // Search
     endpoint,
+    proxy_server_url,
     corpus_id,
+    corpus_key,
     customer_id,
     api_key,
+    metadata_filter,
 
     // App
     ux,
@@ -147,6 +168,7 @@ app.post("/config", (req, res) => {
     summary_prompt_text_filename,
     summary_fcs_mode,
     enable_stream_query,
+    summary_prompt_options,
 
     // Hybrid search
     hybrid_search_num_words,
@@ -156,6 +178,7 @@ app.post("/config", (req, res) => {
     // Rerank
     rerank_num_results,
     reranker_name,
+    user_function,
 
     // MMR
     mmr_diversity_bias,
@@ -177,6 +200,7 @@ app.post("/config", (req, res) => {
     google_analytics_tracking_code,
     full_story_org_id,
     gtm_container_id,
+    amplitude_api_key,
 
     // recommendation
     related_content,

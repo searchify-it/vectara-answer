@@ -11,18 +11,19 @@ import {
   SummaryLanguage,
   SUMMARY_LANGUAGES,
   UxMode,
-  normal_reranker_id,
-  mmr_reranker_id,
-  FcsMode, FCS_MODE, slingshot_reranker_id
+  FcsMode, FCS_MODE, promptOptions
 } from "../views/search/types";
 
 interface Config {
   // Search
   config_endpoint?: string;
+  config_proxy_server_url?: string;
+  config_corpus_key?: string;
   config_corpus_id?: string;
   config_customer_id?: string;
   config_api_key?: string;
   config_enable_stream_query? : string
+  config_metadata_filter?: string
 
   // App
   config_ux?: UxMode;
@@ -60,14 +61,16 @@ interface Config {
   config_google_analytics_tracking_code?: string;
   config_full_story_org_id?: string;
   config_gtm_container_id?: string;
+  config_amplitude_api_key? : string;
 
   // Summary
   config_summary_default_language?: string;
-  config_summary_num_results?: number;
+  config_summary_num_results?: number
   config_summary_num_sentences?: number;
   config_summary_prompt_name?: string;
   config_summary_prompt_text_filename?: string;
   config_summary_fcs_mode?: string | undefined
+  config_summary_prompt_options?: string
 
   // hybrid search
   config_hybrid_search_num_words?: number;
@@ -77,6 +80,7 @@ interface Config {
   // rerank
   config_rerank_num_results?: number;
   config_reranker_name?: string
+  config_user_function?: string
 
 
   // MMR
@@ -91,13 +95,16 @@ interface Config {
 
 type ConfigProp = keyof Config;
 
-const requiredConfigVars = ["corpus_id", "customer_id", "api_key", "endpoint"];
+const requiredConfigVars = ["corpus_key", "corpus_id", "customer_id", "api_key", "endpoint"];
 
 type Search = {
   endpoint?: string;
+  proxyServerUrl?: string;
+  corpusKey?: string;
   corpusId?: string;
   customerId?: string;
   apiKey?: string;
+  metadataFilter?: string
   enableStreamQuery?: boolean
 };
 
@@ -121,11 +128,11 @@ type AppHeader = {
 };
 
 type Source = { value: string; label: string };
-type Filters = {
+type FilterBySource = {
   isEnabled: boolean;
   sources: Source[];
+  filterByCorpus: boolean;
   allSources: boolean;
-  sourceValueToLabelMap?: Record<string, string>;
 };
 
 type Summary = {
@@ -134,6 +141,7 @@ type Summary = {
   summaryNumSentences: number;
   summaryPromptName: string;
   summaryPromptText?: string;
+  summaryPromptOptions?: string[]
 };
 
 type Results = {
@@ -155,6 +163,7 @@ type SearchHeader = {
 type ExampleQuestions = string[];
 type Auth = { isEnabled: boolean; googleClientId?: string };
 type Analytics = {
+  amplitudeApiKey?: string
   googleAnalyticsTrackingCode?: string;
   fullStoryOrgId?: string;
   gtmContainerId?: string;
@@ -162,8 +171,9 @@ type Analytics = {
 type Rerank = {
   isEnabled: boolean;
   numResults?: number;
-  id?: number;
+  names?: string;
   diversityBias?: number;
+  userFunction?: string;
 };
 type Hybrid = { numWords: number; lambdaLong: number; lambdaShort: number };
 
@@ -177,7 +187,7 @@ interface ConfigContextType {
   search: Search;
   app: App;
   appHeader: AppHeader;
-  filters: Filters;
+  filterBySource: FilterBySource;
   summary: Summary;
   results: Results;
   rerank: Rerank;
@@ -186,6 +196,7 @@ interface ConfigContextType {
   exampleQuestions: ExampleQuestions;
   auth: Auth;
   analytics: Analytics;
+  setSummary: (summary: Summary) => void
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
@@ -294,11 +305,11 @@ export const ConfigContextProvider = ({ children }: Props) => {
     logo: {},
     learnMore: {},
   });
-  const [filters, setFilters] = useState<Filters>({
+  const [filterBySource, setFilterBySource] = useState<FilterBySource>({
     isEnabled: false,
     sources: [],
+    filterByCorpus: false,
     allSources: true,
-    sourceValueToLabelMap: {},
   });
   const [searchHeader, setSearchHeader] = useState<SearchHeader>({ logo: {} });
   const [exampleQuestions, setExampleQuestions] = useState<ExampleQuestions>(
@@ -309,8 +320,9 @@ export const ConfigContextProvider = ({ children }: Props) => {
   const [rerank, setRerank] = useState<Rerank>({
     isEnabled: false,
     numResults: 50,
-    id: 272725718,
+    names: "normal",
     diversityBias: 0.3,
+    userFunction: undefined,
   });
   const [hybrid, setHybrid] = useState<Hybrid>({
     numWords: 2,
@@ -355,23 +367,34 @@ export const ConfigContextProvider = ({ children }: Props) => {
       }
     }
 
-    const missingConfigProps = requiredConfigVars.reduce(
-      (accum, configVarName) => {
-        if (config[`config_${configVarName}` as ConfigProp] === undefined)
-          accum.push(configVarName);
+    const missingConfigProps = requiredConfigVars.reduce((accum, configVarName) => {
+      if (configVarName === "corpus_key" || configVarName === "corpus_id" ) {
+        // Skip this check and handle it separately
         return accum;
-      },
-      [] as string[]
-    );
+      }  else {
+        if (config[`config_${configVarName}` as ConfigProp] === undefined) {
+          accum.push(configVarName);
+        }
+      }
+      return accum;
+    }, [] as string[]);
+
+    if (config.config_corpus_key === undefined && config.config_corpus_id === undefined) {
+      missingConfigProps.push("corpus_key or corpus_id");
+    }
+
     setMissingConfigProps(missingConfigProps);
 
     const {
       // Search
       config_endpoint,
+      config_proxy_server_url,
+      config_corpus_key,
       config_corpus_id,
       config_customer_id,
       config_api_key,
       config_enable_stream_query,
+      config_metadata_filter,
 
       // App
       config_ux,
@@ -409,10 +432,12 @@ export const ConfigContextProvider = ({ children }: Props) => {
       config_google_analytics_tracking_code,
       config_full_story_org_id,
       config_gtm_container_id,
+      config_amplitude_api_key,
 
       // rerank
       config_rerank_num_results,
       config_reranker_name,
+      config_user_function,
 
       // MMR
       config_mmr_diversity_bias,
@@ -429,7 +454,8 @@ export const ConfigContextProvider = ({ children }: Props) => {
       config_summary_prompt_name,
       config_summary_prompt_text_filename,
       config_summary_fcs_mode,
-      config_related_content
+      config_related_content,
+      config_summary_prompt_options
     } = config;
 
     setUxMode(config_ux ?? "summary");
@@ -437,9 +463,12 @@ export const ConfigContextProvider = ({ children }: Props) => {
 
     setSearch({
       endpoint: config_endpoint,
+      proxyServerUrl: config_proxy_server_url,
+      corpusKey: config_corpus_key,
       corpusId: config_corpus_id,
       customerId: config_customer_id,
       apiKey: config_api_key,
+      metadataFilter: config_metadata_filter,
       enableStreamQuery: isTrue(config_enable_stream_query)
     });
 
@@ -466,18 +495,12 @@ export const ConfigContextProvider = ({ children }: Props) => {
     const allSources =
       config_all_sources === undefined ? true : isTrue(config_all_sources);
 
+    const corpuses = config_corpus_id ? config_corpus_id?.split(',') : config_corpus_key?.split(',') || []
     const sources =
-      config_sources?.split(",").map((source) => ({
-        value: source.toLowerCase(),
+      config_sources?.split(",").map((source, index) => ({
+        value: corpuses.length === config_sources?.split(",").length ? corpuses[index]: source,
         label: source,
       })) ?? [];
-
-    const sourceValueToLabelMap = sources.length
-      ? sources.reduce((accum, { label, value }) => {
-          accum[value] = label;
-          return accum;
-        }, {} as Record<string, string>)
-      : undefined;
 
     if (isFilteringEnabled && sources.length === 0) {
       console.error(
@@ -485,39 +508,32 @@ export const ConfigContextProvider = ({ children }: Props) => {
       );
     }
 
-    const isRankerEnabled = (rerankerName: string | undefined) => {
-      return rerankerName === "normal" || rerankerName === "slingshot"
-        || rerankerName === "mmr" || false
-    }
-    const getRerankerId = (rerankerName: string | undefined) => {
-      if (rerankerName === "mmr")  return mmr_reranker_id
-      else if (rerankerName === "slingshot") return slingshot_reranker_id
-      else return normal_reranker_id
-
-    }
-
-    const getRerankerDiversty = (rerankerNname: string | undefined) => {
-      if (rerankerNname === "mmr")  return config_mmr_diversity_bias ?? rerank.diversityBias ?? 0.3
-      else return rerank.diversityBias ?? 0.3
-
-    }
-
-    setFilters({
+    setFilterBySource({
       isEnabled: isFilteringEnabled,
       allSources: allSources,
+      filterByCorpus: corpuses.length === config_sources?.split(",").length,
       sources: sources,
-      sourceValueToLabelMap: sourceValueToLabelMap,
     });
 
+    const getPromptOptions = () => {
+      const options = config_summary_prompt_options?.split(",") ?? promptOptions
+      const summaryPromptName =  config_summary_prompt_name ?? "vectara-summary-ext-24-05-sml"
+      if (!options.includes(summaryPromptName)) {
+        options.unshift(summaryPromptName)
+      }
+
+      return options
+    }
     setSummary({
       defaultLanguage: validateLanguage(
         config_summary_default_language as SummaryLanguage,
         "auto"
       ),
-      summaryNumResults: config_summary_num_results ?? 7,
-      summaryNumSentences: config_summary_num_sentences ?? 3,
+      summaryNumResults: Number(config_summary_num_results ?? 7),
+      summaryNumSentences: Number(config_summary_num_sentences ?? 3),
+      summaryPromptOptions: getPromptOptions(),
       summaryPromptName:
-        config_summary_prompt_name ?? "vectara-experimental-summary-ext-2023-12-11-sml",
+        config_summary_prompt_name ?? "vectara-summary-ext-24-05-sml",
       summaryPromptText: config_summary_prompt_text_filename ?
       await fetchPromptText(config_summary_prompt_text_filename) : ""
     });
@@ -540,22 +556,24 @@ export const ConfigContextProvider = ({ children }: Props) => {
     });
 
     setAnalytics({
+      amplitudeApiKey: config_amplitude_api_key,
       googleAnalyticsTrackingCode: config_google_analytics_tracking_code,
       fullStoryOrgId: config_full_story_org_id,
       gtmContainerId: config_gtm_container_id,
     });
 
     setRerank({
-      isEnabled: isRankerEnabled(config_reranker_name),
-      numResults: config_rerank_num_results ?? rerank.numResults,
-      id: getRerankerId(config_reranker_name),
-      diversityBias: getRerankerDiversty(config_reranker_name),
+      isEnabled: !!config_reranker_name,
+      numResults: Number(config_rerank_num_results ?? rerank.numResults),
+      names: config_reranker_name,
+      diversityBias: Number(config_mmr_diversity_bias) ?? rerank.diversityBias ?? 0.3,
+      userFunction: config_user_function,
     });
 
     setHybrid({
-      numWords: config_hybrid_search_num_words ?? hybrid.numWords,
-      lambdaLong: config_hybrid_search_lambda_long ?? hybrid.lambdaLong,
-      lambdaShort: config_hybrid_search_lambda_short ?? hybrid.lambdaShort,
+      numWords: Number(config_hybrid_search_num_words ?? hybrid.numWords),
+      lambdaLong: Number(config_hybrid_search_lambda_long ?? hybrid.lambdaLong),
+      lambdaShort: Number(config_hybrid_search_lambda_short ?? hybrid.lambdaShort),
     });
 
     setResults({
@@ -583,8 +601,9 @@ export const ConfigContextProvider = ({ children }: Props) => {
         search,
         app,
         appHeader,
-        filters,
+        filterBySource,
         summary,
+        setSummary,
         results,
         rerank,
         hybrid,
